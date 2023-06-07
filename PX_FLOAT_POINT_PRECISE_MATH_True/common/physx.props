@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ImportGroup Label="PropertySheets" />
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir>C:\Users\hi\Desktop\testdir5\common\bin\Debug</OutDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SolutionDir)include;C:\Users\hi\PhysX\physx\snippets\graphics\include;C:\Users\hi\PhysX\physx\include;C:\Users\hi\PhysX\physx\snippets;C:\Users\hi\PhysX\physx\pvdruntime</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\Debug;C:\Users\hi\PhysX\physx\bin\win.x86_64.vc143.mt\debug;C:\Users\hi\Desktop\testdir5\common\lib\Debug</AdditionalLibraryDirectories>
+      <AdditionalDependencies>PhysXCooking_64.lib;PhysXExtensions_static_64.lib;PhysXFoundation_64.lib;PhysXPvdSDK_static_64.lib;PhysXTask_static_64.lib;PhysXVehicle_static_64.lib;PhysXVehicle2_static_64.lib;PVDRuntime_64.lib;SceneQuery_static_64.lib;SimulationController_static_64.lib;SnippetUtils_static_64.lib;LowLevel_static_64.lib;LowLevelAABB_static_64.lib;LowLevelDynamics_static_64.lib;PhysX_64.lib;PhysXCharacterKinematic_static_64.lib;PhysXCommon_64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup />
+</Project>
