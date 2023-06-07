@@ -3,7 +3,7 @@
 
 2023年4月より開発を始めました．現在は剛体と変形物体が干渉する際の諸問題について調査し，2つの変形物体で剛体を挟んで持ち上げるといったシミュレーションが問題なく実現できる状況を模索しています．
 
-本システムはPhysX 5のサンプルコードであるSnippet*.cppおよびSnippet*.hをもとに開発している部分が多く，sourceフォルダ内のcppファイルの全部分を私が書いているわけではないことに注意してください．
+本システムはPhysX 5のサンプルコードであるSnippet*.cppおよびSnippet*.hをもとに開発している部分が多く，sourceフォルダ内のcppファイルの全部分を私が書いているわけではないことに注意してください．/research/PX_FLOAT_POINT_PRECISE_MATH_True/common/snippets/内に一連のサンプルコードがあります．本システムのmain.cppはSnippetSoftbody.cppとSnippetHelloWorld.cppを元にして開発を始めました．
 
 
 # 実行結果
