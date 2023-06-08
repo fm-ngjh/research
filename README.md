@@ -5,6 +5,8 @@
 
 本システムはPhysX 5のサンプルコードであるSnippet*.cppおよびSnippet*.hをもとに開発している部分が多く，sourceフォルダ内のcppファイルの全部分を私が書いているわけではないことに注意してください．/research/PX_FLOAT_POINT_PRECISE_MATH_True/common/snippets/内に一連のサンプルコードがあります．本システムのmain.cppはSnippetSoftbody.cppとSnippetHelloWorld.cppを元にして開発を始めました．
 
+主に/research/tree/main/PX_FLOAT_POINT_PRECISE_MATH_True/main/source/内のmain.cppとrender.cppを書いています．
+
 ネット上のPhysX 5開発における情報は乏しいため，サンプルコードと公式のドキュメントを参照しながら試行錯誤して実装しています．
 
 
