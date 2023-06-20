@@ -48,6 +48,7 @@ using namespace meshgenerator;
 #include <time.h>
 #include <fstream>
 #include <sstream>
+#include <direct.h>
 
 using namespace std;
 using namespace myFunc;
@@ -58,38 +59,53 @@ const int solverIterCount = 32;
 const float floorStaticFriction = 0.0f;
 const float floorDynamicFriction = 0.0f;
 const float floorCoefficient = 0.0f;
-const float softBodyDynamicFriction = 1000000.0f;
+const float softBodyDynamicFriction = 1000000000.0f;
 const float softBodyDensity = 5000.0f;
+PxReal maxEdgeLength = 0.25;	// これによって発散するkrの値変わる 0.5ならkr=200000でも大丈夫
 
 const double defRigidDynamicFriction = 100.0;
 const double defRigidStaticFriction = 100.0;
 const double defRigidCoefficient = 0.0;
 
-const float kp = 100000.0f, bp = 1000.0f, kr = 100000.0f, br = 100.0f;
+const float targetRigidBodyDensity = 1000.0f;
+const float kp = 200000.0f, bp = 1000.0f, kr = 100000.0f, br = 100.0f;	// VCの係数
 
-const PxVec3 gravity = PxVec3(0.0, -9.81, 0.0);
+const PxVec3 gravity = PxVec3(0.0, -9.81, 0.0);	// 通常
+//const PxVec3 gravity = PxVec3(0.0, 0.00, 0.0);	// 無重力
 
 
-// CSV用
+// CSV出力に必要な変数
 string output_csv_file_path_rigidbody;
 string output_csv_file_path_softbody;
 double csvTime = 0;
 float dt;
 float TSPS;
-const bool isCSV = false;
 
+int nbDistanceFromPointToSurface = 25;	// 変形物体とある頂点と剛体のある面の距離 何個の頂点について調べるのか
+vector<int> p_index = { 25, 20, 13, 8, 16, 33, 21, 3, 2, 7, 29, 24, 15, 1, 14, 54, 48, 38, 34, 35, 57, 50, 45, 42, 39 };	// 25個の場合の頂点のindex
+vector<float> distanceFromPointToSurface(nbDistanceFromPointToSurface); // 変形物体とある頂点と剛体のある面の距離
+
+
+// フラグの管理
+const bool isCSV = true;			// CSVを出力する
+const bool isVC = true;				// 並進VC力を加える
+const bool isVCRot = true;			// 回転VC力を加える
+const bool isMakeSoftBody = true;	// 変形物体を1つでも生成する
+const bool isAttatchment = true;	// 変形物体と剛体を接続する
+const bool isMoveFinger = true;		// 指を動かす
+const bool isCalDistance = true;
 
 
 // PhysXの初期化
 static PxDefaultAllocator		gAllocator;
 static PxDefaultErrorCallback	gErrorCallback;
-static PxFoundation* gFoundation = NULL;
-static PxPhysics* gPhysics = NULL;
-static PxCudaContextManager* gCudaContextManager = NULL;
-static PxDefaultCpuDispatcher* gDispatcher = NULL;
-static PxScene* gScene = NULL;
-static PxMaterial* gMaterial = NULL;
-static PxPvd* gPvd = NULL;
+static PxFoundation*			gFoundation = NULL;
+static PxPhysics*				gPhysics = NULL;
+static PxCudaContextManager*	gCudaContextManager = NULL;
+static PxDefaultCpuDispatcher*	gDispatcher = NULL;
+static PxScene*					gScene = NULL;
+static PxMaterial*				gMaterial = NULL;
+static PxPvd*					gPvd = NULL;
 std::vector<SoftBody>			gSoftBodies;
 
 
@@ -124,7 +140,7 @@ struct CubeParam {
 		wdh = 0.1; density = 10.0;
 		sf = defRigidStaticFriction; df = defRigidDynamicFriction; cr = defRigidCoefficient;
 		pos = PxVec3(0.0, 0.0, 0.0); prevPos = PxVec3(0.0, 0.0, 0.0);
-		quat = PxQuat(PxIdentity); prevQuat = PxQuat(PxIdentity);
+		quat = PxIdentity; prevQuat = PxIdentity;
 		rigidMaterial = gPhysics->createMaterial(sf, df, cr);
 	}
 
@@ -304,7 +320,7 @@ vector<PxVec3> rPos(2), rPrevPos(2);
 vector<PxQuat> rQuat(2), rPrevQuat(2);
 
 
-// レンダリングのための変数保存
+// レンダリングのための変数保存---------------
 #include "SnippetRender.h"
 
 #define MAX_NUM_ACTOR_SHAPES	128
@@ -377,6 +393,8 @@ bool softBufFlag = 0;
 
 void writeSoftBodyBuffer(softBodyBuf& buf); // 変形物体の頂点をcsvにとるための都合で前方宣言してる
 
+// -----------------------------------------
+
 // ######################################################################
 
 
@@ -414,7 +432,7 @@ static PxSoftBody* createSoftBody(const PxCookingParams& params, const PxArray<P
 
 	PxSoftBodyMesh* softBodyMesh;																									//-----------四面体の生成？ただし最初の2分割？----------
 
-	PxU32 numVoxelsAlongLongestAABBAxis = 8 /*def 8*/;																				//useCollisionMeshForSimulationがfalseの時の分割数？
+	PxU32 numVoxelsAlongLongestAABBAxis = 4 /*def 8*/;																				//useCollisionMeshForSimulationがfalseの時の分割数？
 	PxSimpleTriangleMesh surfaceMesh;
 	surfaceMesh.points.count = triVerts.size();
 	surfaceMesh.points.data = triVerts.begin();
@@ -446,8 +464,8 @@ static PxSoftBody* createSoftBody(const PxCookingParams& params, const PxArray<P
 		PxShape* shape = gPhysics->createShape(geometry, &materialPtr, 1, true, shapeFlags);
 
 		shape->setSimulationFilterData(PxFilterData(0, 0, 1, 0));	// 干渉しない物体を設定するためのフィルタデータ とりあえず変形物体はこの値にした　剛体において３つ目の値を２以上にすると干渉しなくなる
-		shape->setRestOffset(0.0);
-		shape->setContactOffset(0.0001);
+		shape->setRestOffset(0.00);
+		shape->setContactOffset(0.00);
 
 		if (shape)
 		{
@@ -458,6 +476,7 @@ static PxSoftBody* createSoftBody(const PxCookingParams& params, const PxArray<P
 		gScene->addActor(*softBody);
 
 		PxFEMParameters femParams;
+		//femParams.sleepDamping = 1000;
 		addSoftBody(softBody, femParams, *material, PxTransform(PxVec3(0.f, 0.f, 0.f), PxQuat(PxIdentity)), softBodyDensity, 1.0f, solverIterCount);	//密度，スケール，反復計算回数
 		softBody->setSoftBodyFlag(PxSoftBodyFlag::eDISABLE_SELF_COLLISION, true);
 	}
@@ -469,22 +488,25 @@ static void createSoftbodies(const PxCookingParams& params)
 	PxArray<PxVec3> triVerts;
 	PxArray<PxU32> triIndices;
 
-	PxReal maxEdgeLength = 0.25 /*def 1*/;													// 表面をこの長さで分割していく
+	//PxReal maxEdgeLength = 0.5 /*def 1*/;													// 表面の三角形の辺の最大値(斜辺)がこの値未満になるように分割していく
 
-	createCube(triVerts, triIndices, PxVec3(-1.8, 0.3, 0/*0, 1, 0*/), 0.5f /*def 2.5*/);					//箱を作ってる
+	createCube(triVerts, triIndices, PxVec3(-1.875, 0.3, 0/*0, 1, 0*/), 0.5f /*def 2.5*/);					//箱を作ってる
 	PxRemeshingExt::limitMaxEdgeLength(triIndices, triVerts, maxEdgeLength);				//箱の四面体を細かくしていく．干渉検出の方？
-	softBody.push_back(createSoftBody(params, triVerts, triIndices, true /*def true*/));
+	softBody.push_back(createSoftBody(params, triVerts, triIndices, true));
 
-	createCube(triVerts, triIndices, PxVec3(1.8, 0.3, 0), 0.5f /*def 2.5*/);					
+	createCube(triVerts, triIndices, PxVec3(1.875, 0.3, 0), 0.5f /*def 2.5*/);					
 	PxRemeshingExt::limitMaxEdgeLength(triIndices, triVerts, maxEdgeLength);				
-	softBody.push_back(createSoftBody(params, triVerts, triIndices, true /*def true*/));
+	softBody.push_back(createSoftBody(params, triVerts, triIndices, true));
 
-	//createSphere(triVerts, triIndices, PxVec3(0, 0.5, 0), 0.25, maxEdgeLength);
-	//softBody.push_back(createSoftBody(params, triVerts, triIndices));
+	//createSphere(triVerts, triIndices, PxVec3(-1.8, 0.3, 0), 0.25f, maxEdgeLength);
+	//softBody.push_back(createSoftBody(params, triVerts, triIndices, true));
+	////PxSoftBodyExt::transform(*softBody[0], PxTransform(PxVec3(-1.8, 0.3, 0)), 0.5f);
+	////PxSoftBodyExt::commit(*softBody[0], PxSoftBodyData::eALL);
 
-	
-
- 
+	//createSphere(triVerts, triIndices, PxVec3(1.8, 0.3, 0), 0.25f, maxEdgeLength);
+	//softBody.push_back(createSoftBody(params, triVerts, triIndices, true));
+	////PxSoftBodyExt::transform(*softBody[1], PxTransform(PxVec3(1.8, 0.3, 0)), 0.5f);
+	////PxSoftBodyExt::commit(*softBody[1], PxSoftBodyData::eALL);
 }
 
 static PxRigidDynamic* createRigidCube(const PxTransform& t, PxReal halfExtent, double density, PxMaterial* material, PxFilterData data)
@@ -562,7 +584,10 @@ static void connectCubeToSoftBody(PxRigidDynamic* cube, PxReal cubeHalfExtent, c
 				PxVec4 bary;
 				PxI32 tet = PxTetrahedronMeshExt::findTetrahedronContainingPoint(softBody->getCollisionMesh(), p + cubePosition, bary);
 				if (tet >= 0)
-					softBody->addTetRigidAttachment(cube, tet, bary, p);
+				{
+					PxU32 handle = softBody->addTetRigidAttachment(cube, tet, bary, p);
+					/*softBody->removeRigidAttachment(cube, handle);		アタッチメントを削除する方法*/
+				}
 			}
 		}
 	}
@@ -592,9 +617,14 @@ void initCSV() {
 	localtime_s(&local, &t);
 	char buf[128];
 	strftime(buf, sizeof(buf), "%Y-%m-%d-%H-%M-%S", &local);
-	string filename = buf;
-	filename += "_RigidBody.csv";
-	output_csv_file_path_rigidbody = "./csv_logs/" + filename;
+	string time = buf;
+	string dirPath = "./csv_logs/" + time;
+	_mkdir(dirPath.c_str());
+	
+	
+
+	string filePath = "/rigidBody.csv";
+	output_csv_file_path_rigidbody = dirPath + filePath;
 
 	//---------ヘッダの初期化----------
 	vector<string> constName, varName;
@@ -637,24 +667,29 @@ void initCSV() {
 
 
 	// 変形物体用のCSVのイニシャライズ
-	
-	//---------ファイル名の決定 "年-月-日-時-分-秒.csv"----------
-	filename = buf;
-	filename += "_SoftBody.csv";
-	output_csv_file_path_softbody = "./csv_logs/" + filename;
-
-	//---------ヘッダの書き込み----------
 	softBodyBuf buffer = *softBodyBuffer;
-	ofstream ofs_(output_csv_file_path_softbody);
 
-	ofs_ << "時間," << "timeStep," << "TSPS,";
-
-	for (int i = 0; i < buffer.sbGeom[0].sbVertexPos.size(); i++)
+	if (isMakeSoftBody)
 	{
-		ofs_ << "x" + to_string(i) << "," << "y" + to_string(i) << "," << "z" + to_string(i) << ",";
-	}
-	ofs_ << endl;
+		//---------ファイル名の決定 "年-月-日-時-分-秒.csv"----------
+		filePath = "/softBody.csv";
+		output_csv_file_path_softbody = dirPath + filePath;
+		ofstream ofs_(output_csv_file_path_softbody);
 
+		//---------ヘッダの書き込み----------
+
+
+		ofs_ << "時間" << "," << "timeStep" << "," << "TSPS" << ",";
+
+		for (int i = 0; i < buffer.sbGeom[0].sbVertexPos.size(); i++)
+		{
+			ofs_ << "x" + to_string(i) << "," << "y" + to_string(i) << "," << "z" + to_string(i) << ",";
+		}
+
+		for(int i=0; i<nbDistanceFromPointToSurface; i++)
+			ofs_ << "distance_" + to_string(p_index[i]) << ",";	
+		ofs_ << endl;
+	}
 
 }
 
@@ -662,7 +697,7 @@ void writeCSV() {
 	vector<float> varCSV;
 	varCSV.push_back(csvTime); varCSV.push_back(dt); varCSV.push_back(TSPS);
 
-	// 剛体
+	// ---------剛体---------
 	for (auto& cube : rigidCube) {//varCSV.push_back();
 		PxVec3 rot = q2ea(cube.quat);
 		varCSV.push_back(cube.pos.x); varCSV.push_back(cube.pos.y); varCSV.push_back(cube.pos.z); varCSV.push_back(rot.x); varCSV.push_back(rot.y); varCSV.push_back(rot.z);
@@ -686,7 +721,7 @@ void writeCSV() {
 		ofs << x << ",";
 	}
 
-	//---------定数の格納---------
+	//定数の格納
 	vector<float> constCSV;
 	constCSV.push_back(kp); constCSV.push_back(bp); constCSV.push_back(kr); constCSV.push_back(br);
 	constCSV.push_back(floorStaticFriction); constCSV.push_back(floorDynamicFriction);	constCSV.push_back(floorCoefficient);
@@ -697,16 +732,23 @@ void writeCSV() {
 	ofs << endl;
 
 
-	// 変形物体
+	// ---------変形物体---------
 	softBodyBuf buffer = *softBodyBuffer;
 	ofstream ofs_(output_csv_file_path_softbody, ios::app);
 	ofs_ << varCSV[0] << "," << varCSV[1] << "," << varCSV[2] << ",";
 
-	for (int i = 0; i < buffer.sbGeom[0].sbVertexPos.size(); i++)
+	if (!buffer.sbGeom.empty())
 	{
-		ofs_ << buffer.sbGeom[0].sbVertexPos[i][0] << "," << buffer.sbGeom[0].sbVertexPos[i][1] << "," << buffer.sbGeom[0].sbVertexPos[i][2] << ",";
+		for (int i = 0; i < buffer.sbGeom[0].sbVertexPos.size(); i++)
+		{
+			ofs_ << buffer.sbGeom[0].sbVertexPos[i][0] << "," << buffer.sbGeom[0].sbVertexPos[i][1] << "," << buffer.sbGeom[0].sbVertexPos[i][2] << ",";
+		}
+		
+		for (int i = 0; i < nbDistanceFromPointToSurface; i++)
+			ofs_ << distanceFromPointToSurface[i] << ",";
+
+		ofs_ << endl;
 	}
-	ofs_ << endl;
 }
 
 // シミュレーションの初期化時に行いたい処理
@@ -721,27 +763,32 @@ void my_initPhysics()
 	tmpcube.rigidMaterial = gPhysics->createMaterial(0, 0, 0);
 	tmpcube.filterData = PxFilterData(0, 0, 2, 0);
 
+	// 左側の指を生成
 	rigidCube.push_back(tmpcube);
 	rigidCube[0].make();	
 	rigidCube[0].body->setActorFlag(PxActorFlag::eDISABLE_GRAVITY, true);	// 無重力
 	rigidCube[0].body->setAngularDamping(0.00);
-	rigidCube[0].body->setRigidDynamicLockFlag(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z, true);
+	//rigidCube[0].body->setRigidDynamicLockFlag(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z, true);
 
-	tmpcube.pos = PxVec3(2.0, 0.3, 0);
+	// 右側の指を生成
+	tmpcube.pos = PxVec3(2.0, 0.3, 0);	
+	tmpcube.filterData = PxFilterData(0, 0, 2, 0);
 	rigidCube.push_back(tmpcube);
 	rigidCube[1].make();
 	rigidCube[1].body->setActorFlag(PxActorFlag::eDISABLE_GRAVITY, true);	// 無重力
 	rigidCube[1].body->setAngularDamping(0.00);
-	rigidCube[1].body->setRigidDynamicLockFlag(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z, true);
+	//rigidCube[1].body->setRigidDynamicLockFlag(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z, true);
 
-	tmpcube.pos = PxVec3(0, 0.01, 0);
+	// 把持する箱を生成
+	tmpcube.pos = PxVec3(0, 0.5, 0);
 	tmpcube.wdh = 1;
-	tmpcube.density = 750;
-	tmpcube.rigidMaterial = gPhysics->createMaterial(1000000, 100000, 0);
-	tmpcube.filterData = PxFilterData(0, 0, 0, 0);
+	tmpcube.density = targetRigidBodyDensity;
+	tmpcube.rigidMaterial = gPhysics->createMaterial(softBodyDynamicFriction, softBodyDynamicFriction, 0);
+	tmpcube.filterData = PxFilterData(0, 0, 1, 0);
 	rigidCube.push_back(tmpcube);
 	rigidCube[2].make();
 	rigidCube[2].body->setAngularDamping(0.00);
+
 
 	for (int i = 0; i < 2; i++) 
 	{
@@ -750,27 +797,6 @@ void my_initPhysics()
 		rQuat[i] = rigidCube[i].quat;
 		rPrevQuat[i] = rigidCube[i].prevQuat;
 	}
-
-
-	// 剛体指(カプセル)の生成
-	//CapsuleParam tmpcapsule;
-	//tmpcapsule.density = 1000.0;
-	//tmpcapsule.h = 0.01; tmpcapsule.r = 0.01;
-	//tmpcapsule.pos = PxVec3(0.0, 0.1, 0.13); tmpcapsule.prevPos = tmpcapsule.pos;
-	//rigidCapsule.push_back(tmpcapsule);
-	//rigidCapsule[0].make();	//指
-	//tmpcapsule.pos = PxVec3(0.0, 0.1, -0.13); tmpcapsule.prevPos = tmpcapsule.pos;
-	//rigidCapsule.push_back(tmpcapsule);
-	//rigidCapsule[1].make();	//指
-
-	//if (!rigidCapsule.empty()) {
-	//	for (int i = 0; i < 2; i++) {
-	//		rPos[i] = rigidCapsule[i].pos;
-	//		rPrevPos[i] = rigidCapsule[i].prevPos;
-	//		rQuat[i] = rigidCapsule[i].quat;
-	//		rPrevQuat[i] = rigidCapsule[i].prevQuat;
-	//	}
-	//}
 
 	// 球の生成テンプレート
 	//SphereParam tmpsphere;
@@ -807,23 +833,29 @@ void my_initPhysics()
 
 
 	// 変形物体の生成
-	PxTolerancesScale scale;
-	PxCookingParams params(scale);
-	params.meshWeldTolerance = 0.001f;
-	params.meshPreprocessParams = PxMeshPreprocessingFlags(PxMeshPreprocessingFlag::eWELD_VERTICES);
-	params.buildTriangleAdjacencies = false;
-	params.buildGPUData = true;
-	createSoftbodies(params);
+	if (isMakeSoftBody)
+	{
+		PxTolerancesScale scale;
+		PxCookingParams params(scale);
+		params.meshWeldTolerance = 0.001f;
+		params.meshPreprocessParams = PxMeshPreprocessingFlags(PxMeshPreprocessingFlag::eWELD_VERTICES);
+		params.buildTriangleAdjacencies = false;
+		params.buildGPUData = true;
+		createSoftbodies(params);
+	}
 
-	// 剛体箱と変形物体の接続
-	connectCubeToSoftBody(rigidCube[0].body, rigidCube[0].wdh / 2, rigidCube[0].pos, softBody[0], 30);
-	connectCubeToSoftBody(rigidCube[1].body, rigidCube[1].wdh / 2, rigidCube[1].pos, softBody[1], 30);
+	if (isAttatchment and isMakeSoftBody) 
+	{
+		// 剛体箱と変形物体の接続
+		connectCubeToSoftBody(rigidCube[0].body, rigidCube[0].wdh / 2, rigidCube[0].pos, softBody[0], 10);
+		connectCubeToSoftBody(rigidCube[1].body, rigidCube[1].wdh / 2, rigidCube[1].pos, softBody[1], 10);
+	}
 
 	initLastTime();
 
-	// 変形物体レンダリングのためのバッファへの書き込み
-	// 原因不明だがシミュレーションを２回してからでないと変形物体のデータが正しく取れない
-	// elapsedTimeを極小にしておけば影響はない
+	 //変形物体レンダリングのためのバッファへの書き込み
+	 //原因不明だがシミュレーションを２回してからでないと変形物体のデータが正しく取れない
+	 //elapsedTimeを極小にしておけばシミュレーションへの影響はないと思う
 	for (int _ = 0; _ < 2; _++)
 	{
 		gScene->simulate(0.000001);
@@ -851,9 +883,8 @@ void my_initPhysics()
 		initCSV();
 }
 
-int stepcnt = 0, flag = 0, tmp = 0;
-bool movefinger = false;
-int a = 0;
+int step = 0;
+
 PxVec3 cubePos[2] = { PxVec3(-1.1, 0.1, 0), PxVec3(1.1, 0.1, 0) };
 PxQuat cuveQuat[2] = { PxQuat(PxIdentity), PxQuat(PxIdentity) };
 // シミュレーションの１フレームごとに行いたい処理
@@ -874,26 +905,50 @@ void my_stepPhysics()
 	// TSPSの表示
 	TSPS = get_physxTSPS();
 	cout << TSPS << endl;
-	//softBodyBuf buf = *softBodyBuffer;
-	//printf("sbVertexBuffer %d\n", buf.sbGeom[0].sbVertexBuffer.size());
+
+	// 変形物体のある頂点と剛体箱のある面との距離を計算する
+	if (isCalDistance)
+	{
+		// 剛体箱の対象面の頂点の座標と計算
+		vector<PxVec3> cubeVeretexPos;
+		cubeVeretexPos = cal_cube_vertex_pos(rigidCube[2].wdh, rigidCube[2].pos, rigidCube[2].quat);
+
+		vector<PxVec3> p_pos;
+		for(int i=0; i<nbDistanceFromPointToSurface; i++)
+			p_pos.push_back(softBodyBuffer->sbGeom[0].sbVertexPos[p_index[i]]);
+
+		for (int i=0; i<nbDistanceFromPointToSurface; i++)
+		{
+			distanceFromPointToSurface[i] = cal_distance_point_to_surface(p_pos[i], cubeVeretexPos[4], cubeVeretexPos[5], cubeVeretexPos[6]);
+		}
+
+	}
 
 	// 箱指を動かす
-	if (rPos[0].x < -0.7)
+	if (isMoveFinger)
 	{
-		rPos[0].x += 0.01;
-		rPos[1].x -= 0.01;
-	}
-	else if (rPos[0].y < 1.0)
-	{
-		rPos[0].y += 0.01;
-		rPos[1].y += 0.01;
+		if (step > 100)
+		{
+			if (rPos[0].x < /*-0.85*/ -0.725)
+			{
+				rPos[0].x += 0.01;
+				rPos[1].x -= 0.01;
+			}
+			else if (rPos[0].y < 1.0)
+			{
+				rPos[0].y += 0.01;
+				rPos[1].y += 0.01;
+			}
+		}
 	}
 
 	// VC力を加える
 	for (int i = 0; i < 2; i++)
-	{
-		vc(rigidCube[i].body, rPos[i], rPrevPos[i], rigidCube[i].pos, rigidCube[i].prevPos, kp, bp, dt);
-		vcRot(rigidCube[i].body, rQuat[i], rPrevQuat[i], rigidCube[i].quat, rigidCube[i].prevQuat, kr, br, dt);
+	{	
+		if (isVC)
+			vc(rigidCube[i].body, rPos[i], rPrevPos[i], rigidCube[i].pos, rigidCube[i].prevPos, kp, bp, dt);
+		if (isVCRot)
+			vcRot(rigidCube[i].body, rQuat[i], rPrevQuat[i], rigidCube[i].quat, rigidCube[i].prevQuat, kr, br, dt);
 	}
 
 	// 前フレーム実指座標の更新
@@ -902,50 +957,6 @@ void my_stepPhysics()
 		rPrevPos[i] = rPos[i];
 		rPrevQuat[i] = rQuat[i];
 	}
-
-	// カプセル指の移動　今は使ってない
-	//if (0) {
-	//	if (movefinger) {
-	//		if (flag == 0) {
-	//			stepcnt++;
-	//			if (stepcnt == 100) {
-	//				flag++;
-	//				stepcnt = 0;
-	//			}
-	//		}
-	//		else if (flag == 1) {
-	//			rPos[0] += PxVec3(0.0f, 0.0f, -0.001);
-	//			rPos[1] += PxVec3(0.0f, 0.0f, 0.001);
-	//			stepcnt++;
-	//			if (stepcnt == 60) {
-	//				flag++;
-	//				stepcnt = 0;
-	//			}
-	//		}
-	//		if (flag == 2) {
-	//			stepcnt++;
-	//			if (stepcnt == 50) {
-	//				flag++;
-	//				stepcnt = 0;
-	//			}
-	//		}
-	//		else if (flag == 3) {
-	//			rPos[0] += PxVec3(0.0f, 0.001f, 0.0f);
-	//			rPos[1] += PxVec3(0.0f, 0.001f, 0.0f);
-	//			stepcnt++;
-	//			if (stepcnt == 250) {
-	//				flag++;
-	//				stepcnt = 0;
-	//			}
-	//		}
-	//	}
-
-	//	//VC
-	//	for (int i = 0; i < 2; i++) {
-	//		rigidCapsule[i].VC = vc(rigidCapsule[i].body, rPos[i], rPrevPos[i], rigidCapsule[i].pos, rigidCapsule[i].prevPos, kp, bp, dt);
-	//		rigidCapsule[i].VCR = vcRot(rigidCapsule[i].body, rQuat[i], rPrevQuat[i], rigidCapsule[i].quat, rigidCapsule[i].prevQuat, kr, br, dt);
-	//	}
-	//}
 
 	// オブジェクトの前フレームの座標・姿勢更新
 	for (auto& cube : rigidCube) {
@@ -957,6 +968,8 @@ void my_stepPhysics()
 
 	if (isCSV)
 		writeCSV();
+	
+	step++;
 }
 
 
@@ -1255,7 +1268,6 @@ void renderRigidBody(rigidBodyBuf* buffer, PxVec3 dynColor)
 	}
 }
 
-
 void writeSoftBodyBuffer(softBodyBuf& buf) 
 {
 	vector<SoftBody> softBodies;
@@ -1292,8 +1304,7 @@ void writeSoftBodyBuffer(softBodyBuf& buf)
 			const int tetFaces[4][3] = { {0,2,1}, {0,1,3}, {0,3,2}, {1,2,3} };
 
 			const PxU32 tetCount = mesh.getNbTetrahedrons();
-			printf("tetCount %d\n", tetCount);
-			//printf("tet count %d\n", tetCount);
+			//printf("tetCount %d\n", tetCount);
 			const PxU32 has16BitIndices = mesh.getTetrahedronMeshFlags() & PxTetrahedronMeshFlag::e16_BIT_INDICES;
 			const void* indexBuffer = mesh.getTetrahedrons();
 
@@ -1452,9 +1463,9 @@ void initPhysics(bool /*interactive*/)
 		pvdClient->setScenePvdFlag(PxPvdSceneFlag::eTRANSMIT_SCENEQUERIES, true);
 	}
 
-	gMaterial = gPhysics->createMaterial(floorStaticFriction, floorDynamicFriction, floorCoefficient);										//床のマテリアル
+	gMaterial = gPhysics->createMaterial(floorStaticFriction, floorDynamicFriction, floorCoefficient);		//床のマテリアル
 
-	PxRigidStatic* groundPlane = PxCreatePlane(*gPhysics, PxPlane(0, 1, 0, 0), *gMaterial);										//床の生成
+	PxRigidStatic* groundPlane = PxCreatePlane(*gPhysics, PxPlane(0, 1, 0, 0), *gMaterial);					//床の生成
 	gScene->addActor(*groundPlane);
 
 	my_initPhysics();

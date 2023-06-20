@@ -64,4 +64,8 @@ namespace myFunc
 		vector<PxVec3> sbVertexBuffer;	// 描画に使う
 		vector<PxVec3> sbVertexPos;	// メッシュ頂点の座標
 	};
+
+	float cal_distance_point_to_surface(PxVec3 p, PxVec3 s0, PxVec3 s1, PxVec3 s2);
+
+	vector<PxVec3> cal_cube_vertex_pos(float wdh, PxVec3 pos, PxQuat q);
 }
